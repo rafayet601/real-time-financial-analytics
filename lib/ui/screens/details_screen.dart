@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:met_museum_explorer/models/artwork.dart';
-import 'package:met_museum_explorer/ui/components/ar_overlay.dart';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:met_museum_explorer/models/artwork.dart';
+import 'package:met_museum_explorer/utils/constants.dart';
 
 class DetailsScreen extends StatelessWidget {
   final Artwork artwork;
@@ -16,124 +17,143 @@ class DetailsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(artwork.title),
-      ),
-      body: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (artwork.primaryImageUrl != null && artwork.primaryImageUrl!.isNotEmpty)
-              Image.network(
-                artwork.primaryImageUrl!,
-                fit: BoxFit.cover,
-                height: 300,
-                errorBuilder: (context, error, stackTrace) {
-                  return Container(
-                    height: 300,
-                    color: Colors.grey[300],
-                    child: const Center(
-                      child: Icon(Icons.image_not_supported, size: 50),
+      body: CustomScrollView(
+        slivers: [
+          SliverAppBar(
+            expandedHeight: 300,
+            pinned: true,
+            flexibleSpace: FlexibleSpaceBar(
+              background: artwork.primaryImage != null
+                  ? CachedNetworkImage(
+                      imageUrl: artwork.primaryImage!,
+                      fit: BoxFit.cover,
+                      placeholder: (context, url) => const Center(
+                        child: CircularProgressIndicator(),
+                      ),
+                      errorWidget: (context, url, error) => const Icon(
+                        Icons.error,
+                        color: Colors.white,
+                      ),
+                    )
+                  : Container(
+                      color: Colors.grey[900],
+                      child: const Center(
+                        child: Icon(
+                          Icons.image_not_supported,
+                          color: Colors.white,
+                          size: 50,
+                        ),
+                      ),
                     ),
-                  );
-                },
-              )
-            else
-              Container(
-                height: 300,
-                color: Colors.grey[300],
-                child: const Center(
-                  child: Icon(Icons.image_not_supported, size: 50),
-                ),
-              ),
-            Padding(
-              padding: const EdgeInsets.all(16.0),
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.all(AppConstants.defaultPadding),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     artwork.title,
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
+                    style: Theme.of(context).textTheme.headlineSmall,
                   ),
                   const SizedBox(height: 8),
-                  if (artwork.artistName != null)
+                  if (artwork.artistDisplayName != null)
                     Text(
-                      artwork.artistName!,
+                      'By ${artwork.artistDisplayName}',
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                   const SizedBox(height: 16),
-                  _infoRow(Icons.calendar_today, artwork.year?.toString() ?? 'Unknown date'),
-                  _infoRow(Icons.category, artwork.department ?? 'Unknown department'),
-                  if (artwork.medium != null) _infoRow(Icons.brush, artwork.medium!),
-                  if (artwork.culture != null) _infoRow(Icons.public, artwork.culture!),
-                  if (artwork.dimensions != null) _infoRow(Icons.straighten, artwork.dimensions!),
+                  _buildInfoSection(context),
                   const SizedBox(height: 16),
-                  if (artwork.description != null && artwork.description!.isNotEmpty) ...[
-                    Text(
-                      'Description',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(artwork.description!),
-                    const SizedBox(height: 16),
-                  ],
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      if (showARButton)
-                        ElevatedButton.icon(
-                          icon: const Icon(Icons.view_in_ar),
-                          label: const Text('View in AR'),
-                          onPressed: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => AROverlay(artwork: artwork),
-                              ),
-                            );
-                          },
-                        ),
-                      const SizedBox(width: 16),
-                      ElevatedButton.icon(
-                        icon: const Icon(Icons.open_in_browser),
-                        label: const Text('View on Met Website'),
-                        onPressed: () async {
-                          final url = 'https://www.metmuseum.org/art/collection/search/${artwork.objectId}';
-                          if (await canLaunch(url)) {
-                            await launch(url);
-                          }
+                  if (showARButton)
+                    Center(
+                      child: ElevatedButton.icon(
+                        onPressed: () {
+                          // TODO: Implement AR view
                         },
+                        icon: const Icon(Icons.view_in_ar),
+                        label: const Text('View in AR'),
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 24,
+                            vertical: 12,
+                          ),
+                        ),
                       ),
-                    ],
-                  ),
+                    ),
+                  const SizedBox(height: 16),
+                  if (artwork.objectURL != null)
+                    Center(
+                      child: TextButton.icon(
+                        onPressed: () => _launchURL(artwork.objectURL!),
+                        icon: const Icon(Icons.language),
+                        label: const Text('View on MET Website'),
+                      ),
+                    ),
                 ],
               ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _infoRow(IconData icon, String text) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
-      child: Row(
-        children: [
-          Icon(icon, size: 20, color: Colors.grey[700]),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              text,
-              style: const TextStyle(fontSize: 16),
             ),
           ),
         ],
       ),
     );
+  }
+
+  Widget _buildInfoSection(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (artwork.objectDate != null)
+          _buildInfoRow(context, Icons.date_range, 'Date', artwork.objectDate!),
+        if (artwork.medium != null)
+          _buildInfoRow(context, Icons.palette, 'Medium', artwork.medium!),
+        if (artwork.dimensions != null)
+          _buildInfoRow(context, Icons.straighten, 'Dimensions', artwork.dimensions!),
+        if (artwork.department != null)
+          _buildInfoRow(context, Icons.category, 'Department', artwork.department!),
+        if (artwork.culture != null)
+          _buildInfoRow(context, Icons.public, 'Culture', artwork.culture!),
+        if (artwork.period != null)
+          _buildInfoRow(context, Icons.history, 'Period', artwork.period!),
+        if (artwork.creditLine != null)
+          _buildInfoRow(context, Icons.credit_card, 'Credit Line', artwork.creditLine!),
+      ],
+    );
+  }
+
+  Widget _buildInfoRow(BuildContext context, IconData icon, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: Theme.of(context).primaryColor),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+                Text(
+                  value,
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _launchURL(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri);
+    }
   }
 } 

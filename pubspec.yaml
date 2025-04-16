@@ -24,7 +24,7 @@ dependencies:
   vector_math: ^2.1.4
   
   # ML capabilities
-  tflite: ^1.1.2
+  tflite_flutter: ^0.10.4
   image_picker: ^0.8.7+2
   
   # Camera
@@ -36,6 +36,7 @@ dependencies:
   provider: ^6.0.5
   shared_preferences: ^2.1.0
   path_provider: ^2.0.14
+  flutter_isolate: ^2.0.4  # For running ML in a separate isolate
 
 dev_dependencies:
   flutter_test:

@@ -3,9 +3,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences.dart';
 import 'package:met_museum_explorer/models/artwork.dart';
-import 'package:met_museum_explorer/services/image_recognition_service.dart';
+import 'package:met_museum_explorer/services/huggingface_service.dart';
 import 'package:met_museum_explorer/services/met_museum_service.dart';
+import 'package:met_museum_explorer/services/cache_service.dart';
 import 'package:met_museum_explorer/ui/components/ar_info_overlay.dart';
 import 'package:met_museum_explorer/ui/screens/details_screen.dart';
 import 'package:met_museum_explorer/utils/constants.dart';
@@ -19,8 +21,9 @@ class ScannerScreen extends StatefulWidget {
 }
 
 class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserver {
-  final ImageRecognitionService _imageRecognitionService = ImageRecognitionService();
-  final MetMuseumService _metMuseumService = MetMuseumService();
+  late final HuggingFaceService _huggingFaceService;
+  late final MetMuseumService _metMuseumService;
+  late final CacheService _cacheService;
   
   CameraController? _cameraController;
   List<CameraDescription> _cameras = [];
@@ -28,19 +31,47 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   bool _isProcessing = false;
   bool _isCameraInitialized = false;
   bool _isContinuousScanEnabled = true;
+  bool _isModelLoading = true;
   
   Artwork? _currentDetectedArtwork;
   double _detectionConfidence = 0.0;
   
   Timer? _scanTimer;
   int _lastProcessedTimestamp = 0;
-  static const int _processingCooldownMs = 1500; // Cooldown between processing frames
+  static const int _processingCooldownMs = 3000;
   
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _initializeCamera();
+    _initializeServices();
+  }
+  
+  Future<void> _initializeServices() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _cacheService = CacheService(prefs);
+      _metMuseumService = MetMuseumService();
+      _huggingFaceService = HuggingFaceService(_cacheService);
+      
+      await _huggingFaceService.loadModel();
+      
+      if (mounted) {
+        setState(() {
+          _isModelLoading = false;
+        });
+        _initializeCamera();
+      }
+    } catch (e) {
+      print('Error initializing services: $e');
+      if (mounted) {
+        Helpers.showSnackBar(
+          context,
+          'Error initializing services. Please restart the app.',
+          isError: true,
+        );
+      }
+    }
   }
   
   @override
@@ -173,53 +204,49 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
         _isContinuousScanEnabled = false;
         _stopContinuousScan();
       });
-      _processImage(File(image.path));
+      _processImage(image);
     }
   }
 
-  Future<void> _processImage(File imageFile) async {
+  Future<void> _processImage(XFile imageFile) async {
+    if (_isProcessing || _isModelLoading) return;
+    
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastProcessedTimestamp < _processingCooldownMs) return;
+    
     setState(() {
       _isProcessing = true;
+      _lastProcessedTimestamp = now;
     });
-
+    
     try {
-      final recognizedObjects = await _imageRecognitionService.recognizeImage(imageFile);
+      final File file = File(imageFile.path);
+      final artwork = await _huggingFaceService.findMatchingArtwork(file);
       
-      if (recognizedObjects != null && recognizedObjects.isNotEmpty) {
-        // For demonstration, we'll use the top result
-        final topResult = recognizedObjects[0];
-        final String label = topResult['label'];
-        final double confidence = topResult['confidence'];
+      if (artwork != null && mounted) {
+        setState(() {
+          _currentDetectedArtwork = artwork;
+          _detectionConfidence = 0.85;
+        });
         
-        if (confidence > 0.6) { // Lower threshold for continuous scanning
-          // Search for artwork based on recognized label
-          final searchResults = await _metMuseumService.searchObjects(label);
-          
-          if (searchResults.isNotEmpty && mounted) {
-            // Get details of the first result
-            final artwork = await _metMuseumService.getObjectDetails(searchResults[0]);
-            
-            if (mounted) {
-              setState(() {
-                _currentDetectedArtwork = artwork;
-                _detectionConfidence = confidence;
-              });
-            }
-          } else {
-            if (mounted && !_isContinuousScanEnabled) {
-              _showNoResultsDialog();
-            }
-          }
-        } else if (!_isContinuousScanEnabled && mounted) {
-          _showNoResultsDialog();
-        }
-      } else if (!_isContinuousScanEnabled && mounted) {
+        // Navigate to details screen
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => DetailsScreen(artwork: artwork),
+          ),
+        );
+      } else if (mounted && !_isContinuousScanEnabled) {
         _showNoResultsDialog();
       }
     } catch (e) {
       print('Error processing image: $e');
-      if (!_isContinuousScanEnabled && mounted) {
-        _showErrorDialog(e.toString());
+      if (mounted) {
+        Helpers.showSnackBar(
+          context,
+          'Error processing image. Please try again.',
+          isError: true,
+        );
       }
     } finally {
       if (mounted) {
@@ -293,7 +320,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     WidgetsBinding.instance.removeObserver(this);
     _stopContinuousScan();
     _cameraController?.dispose();
-    _imageRecognitionService.dispose();
+    _huggingFaceService.dispose();
     super.dispose();
   }
 
@@ -305,21 +332,61 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
           // Camera preview
           _isCameraInitialized
               ? _buildCameraPreview()
-              : const Center(child: CircularProgressIndicator()),
+              : _isModelLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : const Center(child: Text('Initializing camera...')),
           
-          // Scanning indicator
+          // Loading overlay
+          if (_isModelLoading)
+            Positioned.fill(
+              child: Container(
+                color: Colors.black54,
+                child: const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 16),
+                      Text(
+                        'Loading AI Model...',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          
+          // Processing overlay
           if (_isProcessing)
             Positioned.fill(
               child: Container(
                 color: Colors.black12,
                 child: const Center(
-                  child: SizedBox(
-                    width: 100,
-                    height: 100,
-                    child: CircularProgressIndicator(
-                      color: Colors.white,
-                      strokeWidth: 3,
-                    ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        width: 100,
+                        height: 100,
+                        child: CircularProgressIndicator(
+                          color: Colors.white,
+                          strokeWidth: 3,
+                        ),
+                      ),
+                      SizedBox(height: 16),
+                      Text(
+                        'Analyzing Artwork...',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
