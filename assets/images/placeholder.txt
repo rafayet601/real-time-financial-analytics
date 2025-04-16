@@ -1,0 +1,2 @@
+This directory contains images needed for the app, including AR textures.
+Actual image files should be added here. 

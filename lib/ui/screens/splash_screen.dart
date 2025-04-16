@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:met_museum_explorer/ui/screens/scanner_screen.dart';
-import 'package:met_museum_explorer/services/huggingface_service.dart';
 import 'package:met_museum_explorer/services/cache_service.dart';
-import 'package:shared_preferences.dart';
+import 'package:met_museum_explorer/services/ml_service.dart';
+import 'package:met_museum_explorer/services/met_museum_service.dart';
+import 'package:met_museum_explorer/ui/screens/scanner_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:provider/provider.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({Key? key}) : super(key: key);
@@ -12,6 +15,9 @@ class SplashScreen extends StatefulWidget {
 }
 
 class _SplashScreenState extends State<SplashScreen> {
+  String _loadingMessage = 'Initializing...';
+  bool _hasError = false;
+
   @override
   void initState() {
     super.initState();
@@ -20,35 +26,36 @@ class _SplashScreenState extends State<SplashScreen> {
 
   Future<void> _initializeApp() async {
     try {
+      setState(() => _loadingMessage = 'Loading preferences...');
       final prefs = await SharedPreferences.getInstance();
+
+      setState(() => _loadingMessage = 'Initializing services...');
       final cacheService = CacheService(prefs);
-      final huggingFaceService = HuggingFaceService(cacheService);
-      
-      await huggingFaceService.loadModel();
-      
-      if (mounted) {
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (context) => ScannerScreen(),
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Error'),
-            content: Text('Failed to initialize app: $e'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('OK'),
-              ),
+      final metService = MetMuseumService();
+      final mlService = MLService();
+
+      setState(() => _loadingMessage = 'Loading ML model...');
+      await mlService.loadModel();
+
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => MultiProvider(
+            providers: [
+              Provider.value(value: cacheService),
+              Provider.value(value: metService),
+              Provider.value(value: mlService),
             ],
+            child: const ScannerScreen(),
           ),
-        );
-      }
+        ),
+      );
+    } catch (e) {
+      print('Initialization Error: $e');
+      setState(() {
+        _loadingMessage = 'Failed to initialize. Please restart the app.';
+        _hasError = true;
+      });
     }
   }
 
@@ -58,51 +65,34 @@ class _SplashScreenState extends State<SplashScreen> {
       body: Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
             colors: [
-              Colors.indigo.shade900,
-              Colors.indigo.shade700,
+              Theme.of(context).colorScheme.primary,
+              Theme.of(context).colorScheme.secondary,
             ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
           ),
         ),
         child: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(
-                Icons.museum,
-                size: 100,
-                color: Colors.white,
-              ),
-              const SizedBox(height: 24),
-              const Text(
+              const Icon(Icons.museum, size: 80, color: Colors.white),
+              const SizedBox(height: 20),
+              Text(
                 'Met Museum Explorer',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(color: Colors.white),
               ),
-              const SizedBox(height: 16),
-              const Text(
-                'Powered by AI',
-                style: TextStyle(
-                  color: Colors.white70,
-                  fontSize: 16,
-                ),
-              ),
-              const SizedBox(height: 48),
-              const CircularProgressIndicator(
-                color: Colors.white,
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Initializing...',
-                style: TextStyle(
-                  color: Colors.white70,
-                  fontSize: 14,
-                ),
+              const SizedBox(height: 40),
+              if (!_hasError)
+                const CircularProgressIndicator(color: Colors.white)
+              else
+                Icon(Icons.error_outline, color: Colors.red[300], size: 40),
+              const SizedBox(height: 20),
+              Text(
+                _loadingMessage,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70, fontSize: 16),
               ),
             ],
           ),

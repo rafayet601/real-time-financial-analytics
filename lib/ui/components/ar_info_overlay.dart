@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:met_museum_explorer/models/artwork.dart';
 import 'package:met_museum_explorer/utils/constants.dart';
+import 'package:met_museum_explorer/ui/screens/ar_view_screen.dart';
 
 class ARInfoOverlay extends StatelessWidget {
   final Artwork artwork;
@@ -37,13 +38,21 @@ class ARInfoOverlay extends StatelessWidget {
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
                   ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
               if (showARButton)
                 IconButton(
                   icon: const Icon(Icons.view_in_ar, color: Colors.white),
+                  tooltip: 'View in AR',
                   onPressed: () {
-                    // TODO: Implement AR view
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => ARViewScreen(artwork: artwork),
+                      ),
+                    );
                   },
                 ),
             ],
@@ -56,6 +65,8 @@ class ARInfoOverlay extends StatelessWidget {
                 color: Colors.white70,
                 fontSize: 14,
               ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
           if (artwork.objectDate != null) ...[

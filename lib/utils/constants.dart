@@ -8,6 +8,22 @@ class ApiConstants {
   // Feature flags
   static const bool enableAR = true;
   static const bool enableImageRecognition = true;
+
+  // Demo mode (set to true to use sample data instead of real ML)
+  static const bool DEMO_MODE = true;
+  
+  // Demo artwork IDs for testing (famous pieces from the MET)
+  static const List<int> DEMO_ARTWORK_IDS = [
+    436535,  // Vincent van Gogh, "Wheat Field with Cypresses"
+    437985,  // Pablo Picasso, "The Blind Man's Meal"
+    452367,  // Diego Velázquez, "Juan de Pareja"
+    11417,   // Caravaggio, "The Musicians"
+    438815,  // Claude Monet, "Garden at Sainte-Adresse"
+    436947,  // Edvard Munch, "The Storm"
+  ];
+  
+  // Default artwork ID to show in demo mode if no others are found
+  static const int DEFAULT_DEMO_ARTWORK_ID = 436535; // Van Gogh
 }
 
 class AppConstants {

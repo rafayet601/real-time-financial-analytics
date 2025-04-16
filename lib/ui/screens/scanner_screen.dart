@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
@@ -12,6 +13,8 @@ import 'package:met_museum_explorer/ui/components/ar_info_overlay.dart';
 import 'package:met_museum_explorer/ui/screens/details_screen.dart';
 import 'package:met_museum_explorer/utils/constants.dart';
 import 'package:met_museum_explorer/utils/helpers.dart';
+import 'package:provider/provider.dart';
+import 'package:met_museum_explorer/services/ml_service.dart';
 
 class ScannerScreen extends StatefulWidget {
   const ScannerScreen({Key? key}) : super(key: key);
@@ -39,6 +42,9 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
   Timer? _scanTimer;
   int _lastProcessedTimestamp = 0;
   static const int _processingCooldownMs = 3000;
+  
+  MLService get _mlService => Provider.of<MLService>(context, listen: false);
+  MetMuseumService get _metService => Provider.of<MetMuseumService>(context, listen: false);
   
   @override
   void initState() {
@@ -114,7 +120,7 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
         });
         
         // Start continuous scanning once camera is initialized
-        _startContinuousScan();
+        _startScanning();
       }
     } catch (e) {
       print('Error initializing camera: $e');
@@ -128,15 +134,12 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     }
   }
   
-  void _startContinuousScan() {
-    if (_scanTimer != null) {
-      _scanTimer!.cancel();
-    }
-    
-    // Process frames every 500ms
-    _scanTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
-      if (!_isProcessing && _isCameraInitialized && mounted) {
-        _processCameraImage();
+  void _startScanning() {
+    _scanTimer?.cancel(); // Cancel any existing timer
+    // Scan every few seconds (adjust interval as needed)
+    _scanTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      if (!_isProcessing && _isCameraInitialized && _cameraController!.value.isStreamingImages == false) {
+          _scanImage();
       }
     });
   }
@@ -146,172 +149,119 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
     _scanTimer = null;
   }
   
-  Future<void> _processCameraImage() async {
-    // Check cooldown to prevent processing too many frames
-    final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastProcessedTimestamp < _processingCooldownMs) {
-      return;
-    }
-    
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      return;
-    }
-    
-    if (_isProcessing) {
-      return;
-    }
-    
-    setState(() {
-      _isProcessing = true;
-    });
-    
-    try {
-      final imageFile = await _takePictureWithoutSaving();
-      if (imageFile != null) {
-        await _processImage(imageFile);
-      }
-    } catch (e) {
-      print('Error processing camera frame: $e');
-    } finally {
-      _lastProcessedTimestamp = DateTime.now().millisecondsSinceEpoch;
-      if (mounted) {
-        setState(() {
-          _isProcessing = false;
-        });
-      }
-    }
-  }
+  Future<void> _scanImage() async {
+    if (!_isCameraInitialized || _cameraController == null || _isProcessing) return;
 
-  Future<File?> _takePictureWithoutSaving() async {
-    if (_cameraController == null || !_cameraController!.value.isInitialized) {
-      return null;
-    }
-    
+    setState(() => _isProcessing = true);
+
     try {
-      final XFile photo = await _cameraController!.takePicture();
-      return File(photo.path);
+      final image = await _cameraController!.takePicture();
+      final imageBytes = await image.readAsBytes();
+      
+      final recognitionResults = await _mlService.recognizeImage(imageBytes);
+
+      if (recognitionResults != null && recognitionResults.isNotEmpty) {
+        // Find the result with the highest confidence
+        final topResult = recognitionResults.entries.reduce((a, b) => a.value > b.value ? a : b);
+        final artworkLabel = topResult.key;
+        final confidence = topResult.value;
+
+        print('Top Result: $artworkLabel with confidence: $confidence');
+
+        if (confidence > AppConstants.minConfidenceThreshold) {
+           // Assuming the label directly corresponds to an object ID or requires mapping
+          // For now, let's assume the label IS the object ID (needs adjustment)
+          try {
+            final objectId = int.parse(artworkLabel);
+            final artwork = await _metService.getObjectDetails(objectId);
+            setState(() {
+              _currentDetectedArtwork = artwork;
+              _detectionConfidence = confidence;
+            });
+             // Optionally stop scanning or navigate
+             // _scanTimer?.cancel();
+             // _navigateToDetails(artwork);
+          } catch (e) {
+             print('Failed to parse label or fetch artwork: $e');
+             setState(() {
+              _currentDetectedArtwork = null; // Clear previous detection if fetch fails
+              _detectionConfidence = 0.0;
+            });
+          }
+        } else {
+           setState(() {
+              _currentDetectedArtwork = null;
+              _detectionConfidence = 0.0;
+            });
+        }
+      } else {
+         setState(() {
+            _currentDetectedArtwork = null;
+            _detectionConfidence = 0.0;
+          });
+      }
+    } on CameraException catch (e) {
+      print('Error taking picture: ${e.description}');
     } catch (e) {
-      print('Error capturing image: $e');
-      return null;
+      print('Error during scanning: $e');
+    } finally {
+      setState(() => _isProcessing = false);
     }
   }
 
   Future<void> _pickImageFromGallery() async {
-    final ImagePicker picker = ImagePicker();
-    final XFile? image = await picker.pickImage(source: ImageSource.gallery);
-    if (image != null) {
-      setState(() {
-        _isContinuousScanEnabled = false;
-        _stopContinuousScan();
-      });
-      _processImage(image);
-    }
+     _scanTimer?.cancel(); // Stop scanning when picking from gallery
+     setState(() => _isProcessing = true);
+     try {
+       final picker = ImagePicker();
+       final pickedFile = await picker.pickImage(source: ImageSource.gallery);
+       if (pickedFile != null) {
+         final imageBytes = await pickedFile.readAsBytes();
+         // Process the picked image similar to _scanImage
+         final recognitionResults = await _mlService.recognizeImage(imageBytes);
+          if (recognitionResults != null && recognitionResults.isNotEmpty) {
+            final topResult = recognitionResults.entries.reduce((a, b) => a.value > b.value ? a : b);
+            final artworkLabel = topResult.key;
+            final confidence = topResult.value;
+             if (confidence > AppConstants.minConfidenceThreshold) {
+              try {
+                 final objectId = int.parse(artworkLabel);
+                 final artwork = await _metService.getObjectDetails(objectId);
+                 _navigateToDetails(artwork);
+               } catch (e) {
+                 _showError('Could not find details for the recognized artwork.');
+               }
+             } else {
+               _showError('Artwork not recognized with sufficient confidence.');
+             }
+           } else {
+             _showError('Could not recognize artwork in the selected image.');
+           }
+       }
+     } catch (e) {
+       _showError('Failed to pick image: $e');
+     } finally {
+        setState(() => _isProcessing = false);
+        _startScanning(); // Resume scanning
+     }
   }
 
-  Future<void> _processImage(XFile imageFile) async {
-    if (_isProcessing || _isModelLoading) return;
-    
-    final now = DateTime.now().millisecondsSinceEpoch;
-    if (now - _lastProcessedTimestamp < _processingCooldownMs) return;
-    
-    setState(() {
-      _isProcessing = true;
-      _lastProcessedTimestamp = now;
-    });
-    
-    try {
-      final File file = File(imageFile.path);
-      final artwork = await _huggingFaceService.findMatchingArtwork(file);
-      
-      if (artwork != null && mounted) {
-        setState(() {
-          _currentDetectedArtwork = artwork;
-          _detectionConfidence = 0.85;
-        });
-        
-        // Navigate to details screen
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => DetailsScreen(artwork: artwork),
-          ),
-        );
-      } else if (mounted && !_isContinuousScanEnabled) {
-        _showNoResultsDialog();
-      }
-    } catch (e) {
-      print('Error processing image: $e');
-      if (mounted) {
-        Helpers.showSnackBar(
-          context,
-          'Error processing image. Please try again.',
-          isError: true,
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isProcessing = false;
-        });
-      }
-    }
-  }
-
-  void _viewArtworkDetails() {
-    if (_currentDetectedArtwork != null) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => DetailsScreen(
-            artwork: _currentDetectedArtwork!,
-            showARButton: true,
-          ),
+  void _navigateToDetails(Artwork artwork) {
+     _scanTimer?.cancel(); // Stop scanning before navigating
+     Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DetailsScreen(
+          artwork: artwork,
+          showARButton: AppConstants.enableAR, // Use constant from AppConstants
         ),
-      );
-    }
+      ),
+    ).then((_) => _startScanning()); // Resume scanning when returning
   }
 
-  void _showNoResultsDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('No Match Found'),
-        content: const Text('We couldn\'t identify this artwork. Try a different angle or lighting.'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              setState(() {
-                _isContinuousScanEnabled = true;
-              });
-              _startContinuousScan();
-            },
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showErrorDialog(String errorMessage) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Error'),
-        content: Text('An error occurred: $errorMessage'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              setState(() {
-                _isContinuousScanEnabled = true;
-              });
-              _startContinuousScan();
-            },
-            child: const Text('OK'),
-          ),
-        ],
-      ),
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red),
     );
   }
 
@@ -399,10 +349,11 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
               left: 0,
               right: 0,
               child: GestureDetector(
-                onTap: _viewArtworkDetails,
+                onTap: () => _navigateToDetails(_currentDetectedArtwork!),
                 child: ARInfoOverlay(
                   artwork: _currentDetectedArtwork!,
                   confidence: _detectionConfidence,
+                  showARButton: false,
                 ),
               ),
             ),
@@ -480,6 +431,30 @@ class _ScannerScreenState extends State<ScannerScreen> with WidgetsBindingObserv
                       ),
                     ),
                   ],
+                ),
+              ),
+            ),
+          
+          // Demo mode indicator
+          if (ApiConstants.DEMO_MODE)
+            Positioned(
+              top: 80,
+              left: 0,
+              right: 0,
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 20),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: Colors.amber.withOpacity(0.8),
+                  borderRadius: BorderRadius.circular(AppConstants.defaultBorderRadius),
+                ),
+                child: const Text(
+                  'DEMO MODE: Point camera at any artwork to see sample data',
+                  style: TextStyle(
+                    color: Colors.black87,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
                 ),
               ),
             ),
